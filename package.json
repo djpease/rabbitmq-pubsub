@@ -6,7 +6,9 @@
   "scripts": {
     "build": "webpack",
     "build:watch": "webpack --watch",
+    "prepare": "npm run build",
     "pretest": "npm run build",
+    "prepublish": "npm run build",
     "jest": "./node_modules/.bin/jest",
     "test": "jest",
     "test:watch": "npm test -- --watch",
