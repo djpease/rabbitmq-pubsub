@@ -9,6 +9,8 @@ export interface IRabbitMqSubscriberDisposer {
     (): Promisefy<void>;
 }
 
+let subscriberChannelMap = {};
+
 export class RabbitMqSubscriber {
 
     constructor(private logger: Logger, private connectionFactory: IRabbitMqConnectionFactory) {
@@ -17,15 +19,33 @@ export class RabbitMqSubscriber {
 
     subscribe<T>(queue: string | IQueueNameConfig, action: (message: T) => Promisefy<any> | void): Promisefy<IRabbitMqSubscriberDisposer> {
         const queueConfig = asPubSubQueueNameConfig(queue);
+        let _this = this;
         return this.connectionFactory.create()
-            .then(connection => connection.createChannel())
-            .then(channel => {
-                this.logger.trace("got channel for queue '%s'", queueConfig.name);
-                return this.setupChannel<T>(channel, queueConfig)
-                .then((queueName) => {
-                    this.logger.debug("queue name generated for subscription queue '(%s)' is '(%s)'", queueConfig.name, queueName);
-                   var queConfig = { ...queueConfig, dlq: queueName}
-                    return this.subscribeToChannel<T>(channel, queueConfig, action)})
+            .then(function (connection) {
+                // fix issue with new channels being created every subscribe
+                let queueName = queueConfig.name,
+                    currentChannel = subscriberChannelMap[queueName];
+                //console.log('')
+                if(currentChannel){
+                    //console.log('Using EXISTING subscriber channel!')
+                    return currentChannel;
+                }else {
+                    //console.log('create a new subscriber channel')
+                    return connection.createChannel();
+                }
+
+            })
+            .then(function (channel) {
+                let queueName = queueConfig.name;
+                if(!subscriberChannelMap[queueName]){
+                    subscriberChannelMap[queueName] = channel;
+                }
+                _this.logger.trace("got channel for queue '%s'", queueConfig.name);
+                return _this.setupChannel<T>(channel, queueConfig)
+                    .then((queueName) => {
+                        _this.logger.debug("queue name generated for subscription queue '(%s)' is '(%s)'", queueConfig.name, queueName);
+                        let queConfig = { ...queueConfig, dlq: queueName};
+                        return _this.subscribeToChannel<T>(channel, queueConfig, action)})
             });
     }
 
@@ -62,11 +82,11 @@ export class RabbitMqSubscriber {
         return JSON.parse(message.content.toString('utf8')) as T;
     }
 
-     protected async getChannelSetup(channel: amqp.Channel, queueConfig: IQueueNameConfig) {
-           await channel.assertExchange(queueConfig.dlx, 'fanout', this.getDLSettings());
-           let result =  await channel.assertQueue(queueConfig.dlq, this.getQueueSettings(queueConfig.dlx));
-           await channel.bindQueue(result.queue, queueConfig.dlx, '');
-           return result.queue;
+    protected async getChannelSetup(channel: amqp.Channel, queueConfig: IQueueNameConfig) {
+        await channel.assertExchange(queueConfig.dlx, 'fanout', this.getDLSettings());
+        let result =  await channel.assertQueue(queueConfig.dlq, this.getQueueSettings(queueConfig.dlx));
+        await channel.bindQueue(result.queue, queueConfig.dlx, '');
+        return result.queue;
     }
 
     protected getQueueSettings(deadletterExchangeName: string): amqp.Options.AssertQueue {

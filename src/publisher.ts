@@ -5,26 +5,42 @@ import * as Promise from "bluebird";
 import { IQueueNameConfig, asPubSubQueueNameConfig } from "./common";
 import { createChildLogger } from "./childLogger";
 
+let publishChannelMap = {};
+
 export class RabbitMqPublisher {
     constructor(private logger: Logger, private connectionFactory: IRabbitMqConnectionFactory) {
         this.logger = createChildLogger(logger, "RabbitMqPublisher");
-
     }
 
     publish<T>(queue: string | IQueueNameConfig, message: T): Promise<void> {
         const queueConfig = asPubSubQueueNameConfig(queue);
-        const settings = this.getSettings();
+        //const settings = this.getSettings();
+        let _this = this;
         return this.connectionFactory.create()
-            .then(connection => connection.createChannel())
-            .then(channel => {
-                this.logger.trace("got channel for exchange '%s'", queueConfig.dlx);
-                return this.setupChannel<T>(channel, queueConfig)
+            .then(function (connection) {
+                let queueName = queueConfig.name,
+                    currentChannel = publishChannelMap[queueName];
+                if(currentChannel){
+                    //console.log('Using EXISTING publish channel', queueName)
+                    return currentChannel;
+                }else {
+                    //console.log('create a new channel',queueName)
+                    return connection.createChannel();
+                }
+            })
+            .then(function (channel) {
+                let queueName = queueConfig.name;
+                if(!publishChannelMap[queueName]){
+                    publishChannelMap[queueName] = channel;
+                }
+                _this.logger.trace("got channel for exchange '%s'", queueConfig.dlx);
+                return _this.setupChannel<T> (channel, queueConfig)
                     .then(() => {
                         return Promise.resolve(channel.publish(queueConfig.dlx, '', this.getMessageBuffer(message))).then(() => {
-                            this.logger.trace("message sent to exchange '%s' (%j)", queueConfig.dlx, message)
+                            _this.logger.trace("message sent to exchange '%s' (%j)", queueConfig.dlx, message)
                         });
                     }).catch(() => {
-                         this.logger.error("unable to send message to exchange '%j' {%j}", queueConfig.dlx, message)
+                        _this.logger.error("unable to send message to exchange '%j' {%j}", queueConfig.dlx, message)
                         return Promise.reject(new Error("Unable to send message"))
                     })
             });
